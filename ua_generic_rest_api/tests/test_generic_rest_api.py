@@ -24,17 +24,14 @@ def make_response(
     response.status_code = status_code
     response.url = url
     response.headers["Content-Type"] = content_type
-
-    if isinstance(body, (dict, list)):
-        response._content = json.dumps(body).encode("utf-8")
-    elif isinstance(body, str):
-        response._content = body.encode("utf-8")
-    elif body is None:
-        response._content = b""
-    else:
-        response._content = body
-
     response.encoding = "utf-8"
+
+    if content_type == "application/json":
+        response._content = json.dumps(body).encode("utf-8")
+    # For xmls
+    else:
+        response._content = body.encode("utf-8")
+
     return response
 
 
@@ -269,14 +266,11 @@ class TestGenericRestApi(unittest.TestCase):
 
         parameters = {"country": countries[:10000]}
 
-        def mock_get_response(url, *args, **kwargs):
-            return make_response(
-                status_code=200,
-                body={"results": []},
-                url=url,
-            )
-
-        mock_get.side_effect = mock_get_response
+        mock_get.return_value = make_response(
+            status_code=200,
+            body={"results": []},
+            url=f"{HOST}cities",
+        )
 
         responses = self.json_api.get(
             "cities",
