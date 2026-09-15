@@ -1,167 +1,332 @@
-import math
-import json
-import string
 import unittest
+
 import requests
-from nose.tools import raises
+import responses
+
 from ua_generic_rest_api import ua_generic_rest_api
 
 
 class TestRestApi(ua_generic_rest_api.GenericRestApi):
-    def __init__(self, host, content_type):
-        super().__init__(host, content_type, "page")
+    """Concrete GenericRestApi implementation used for testing."""
+
+    def __init__(self, host="https://api.example.com/"):
+        super().__init__(
+            host,
+            {"Content-Type": "application/json"},
+            "page",
+        )
 
 
 class TestGenericRestApi(unittest.TestCase):
+    """Core unit tests for GenericRestApi."""
+
     def setUp(self):
-        json_host = "https://api.openaq.org/v1/"
-        self.json_api = TestRestApi(
-            json_host, {"Content-Type": "application/json"})
+        """Create a fresh API client before each test."""
+        self.api = TestRestApi()
 
     def test_get_no_urls(self):
-        assert self.json_api.get([]) == []
+        """GET should return an empty list when no endpoints are provided."""
+        self.assertEqual(self.api.get([]), [])
 
-    def test_get_string_and_list(self):
-        str_response = self.json_api.get("https://api.openaq.org/v1/cities")
-        list_response = self.json_api.get(["https://api.openaq.org/v1/cities"])
-        assert str_response[0].text == list_response[0].text
+    @responses.activate
+    def test_get_string_endpoint(self):
+        """GET should support a single relative endpoint."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities",
+            json={"result": "success"},
+            status=200,
+        )
 
-    def test_get_endpoint_with_and_without_host(self):
-        with_host = self.json_api.get("https://api.openaq.org/v1/countries")
-        without_host = self.json_api.get("countries")
-        assert with_host[0].text == without_host[0].text
+        result = self.api.get("cities")
 
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status_code, 200)
+        self.assertEqual(
+            result[0].json(),
+            {"result": "success"},
+        )
+
+    @responses.activate
     def test_get_multiple_queries(self):
-        query_response = self.json_api.get(
-            "https://api.openaq.org/v1/cities", {"limit": "1", "page": "2"})
+        """GET should append multiple query parameters."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities?limit=1&page=2",
+            json={"results": []},
+            status=200,
+        )
 
-        json_response = json.loads(query_response[0].text)
-        assert int(json_response["meta"]["page"]) == 2
-        assert len(json_response["results"]) == 1
+        result = self.api.get(
+            "cities",
+            {
+                "limit": "1",
+                "page": "2",
+            },
+        )
 
+        self.assertEqual(result[0].status_code, 200)
+
+        request_url = responses.calls[0].request.url
+
+        self.assertIn("limit=1", request_url)
+        self.assertIn("page=2", request_url)
+
+    @responses.activate
     def test_get_multiple_queries_with_multiple_values(self):
-        query_response = self.json_api.get(
-            "https://api.openaq.org/v1/cities",
-            {"country": ["BR", "CA"], "limit": "10000"})
+        """GET should support multiple values for one query parameter."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities",
+            json={"results": []},
+            status=200,
+            match_querystring=False,
+        )
 
-        json_response = json.loads(query_response[0].text)
-        assert int(json_response["meta"]["limit"]) == 10000
-        for entry in json_response["results"]:
-            assert entry["country"] in ["BR", "CA"]
+        self.api.get(
+            "cities",
+            {
+                "country": ["BR", "CA"],
+                "limit": "100",
+            },
+        )
 
-    def test_batch_get_with_multiple_queries(self):
-        endpoints = ["https://api.openaq.org/v1/cities"]
-        query_response = self.json_api.get(
-            endpoints, {"limit": "1", "page": "2"})
+        request_url = responses.calls[0].request.url
 
-        json_responses = json.loads(query_response[0].text)
-        assert int(json_responses["meta"]["page"]) == 2
-        assert len(json_responses["results"]) == 1
+        self.assertIn("country=BR", request_url)
+        self.assertIn("country=CA", request_url)
+        self.assertIn("limit=100", request_url)
 
-    def test_batch_get_more_than_max_pool_threads(self):
-        first_country_response = self.json_api.get(
-            "https://api.openaq.org/v1/countries", {"limit": "1", "page": "1"})
-        first_country_json = json.loads(first_country_response[0].text)
-        max_countries = int(first_country_json["meta"]["found"])
+    @responses.activate
+    def test_batch_get_multiple_endpoints(self):
+        """GET should retrieve multiple endpoints."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities",
+            json={"name": "cities"},
+            status=200,
+        )
 
-        urls = ["https://api.openaq.org/v1/countries"] * max_countries
-        urls = [f"{url}?limit=1&page={i + 1}" for i, url in enumerate(urls)]
-        all_responses = self.json_api.get(urls)
-        all_jsons = [json.loads(response.text) for response in all_responses]
+        responses.add(
+            responses.GET,
+            "https://api.example.com/countries",
+            json={"name": "countries"},
+            status=200,
+        )
 
-        country_codes = [entry["results"][0]["code"] for entry in all_jsons]
-        assert len(country_codes) == len(set(country_codes)) == max_countries
+        result = self.api.get(
+            [
+                "cities",
+                "countries",
+            ]
+        )
 
-    def test_multithread_all_pages_without_existing_parameters(self):
-        responses = self.json_api.get("https://api.openaq.org/v1/cities")
-        single_json = json.loads(responses[0].text)
-        total_pages = math.ceil(
-            int(single_json["meta"]["found"])
-            / int(single_json["meta"]["limit"]))
-        assert total_pages > 1
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(responses.calls), 2)
 
-        responses = self.json_api.get(
-            "https://api.openaq.org/v1/cities", total_pages=total_pages)
-        city_jsons = [json.loads(response.text) for response in responses]
-        num_cities = sum([len(entry["results"]) for entry in city_jsons])
-        assert int(city_jsons[0]["meta"]["found"]) == num_cities
+    @responses.activate
+    def test_multithread_all_pages_with_parameters(self):
+        """GET should preserve parameters while adding page numbers."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities?limit=50&page=1",
+            json={"page": 1},
+            status=200,
+        )
 
-    def test_multithread_all_pages_with_existing_parameters(self):
-        responses = self.json_api.get("https://api.openaq.org/v1/cities")
-        single_json = json.loads(responses[0].text)
-        default_limit = int(single_json["meta"]["limit"])
-        total_pages = math.ceil(
-            int(single_json["meta"]["found"]) / default_limit)
-        assert total_pages > 1
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities?limit=50&page=2",
+            json={"page": 2},
+            status=200,
+        )
 
-        responses = self.json_api.get(
-            "https://api.openaq.org/v1/cities",
-            parameters={"limit": default_limit},
-            total_pages=total_pages)
+        result = self.api.get(
+            "cities",
+            parameters={"limit": 50},
+            total_pages=2,
+        )
 
-        city_jsons = [json.loads(response.text) for response in responses]
-        num_cities = sum([len(entry["results"]) for entry in city_jsons])
-        assert int(city_jsons[0]["meta"]["found"]) == num_cities
-        for city in city_jsons:
-            assert city["meta"]["limit"] == default_limit
+        self.assertEqual(len(result), 2)
 
-    def test_get_xml_format(self):
-        sources_response = self.json_api.get(
-            "https://api.openaq.org/v1/sources")
-        sources_json = json.loads(sources_response[0].text)
-        xml_url = None
-        for entry in sources_json["results"]:
-            if entry["url"].endswith(".xml"):
-                xml_url = entry["url"]
-                break
+        requested_urls = {
+            call.request.url
+            for call in responses.calls
+        }
 
-        xml_api = TestRestApi("", {"Content-Type": "application/xml"})
-        xml_response = xml_api.get(xml_url)
-        assert xml_response[0].status_code == 200
+        self.assertIn(
+            "https://api.example.com/cities?limit=50&page=1",
+            requested_urls,
+        )
 
-    @raises(requests.exceptions.HTTPError)
+        self.assertIn(
+            "https://api.example.com/cities?limit=50&page=2",
+            requested_urls,
+        )
+
+    @responses.activate
+    def test_get_does_not_mutate_parameters(self):
+        """Pagination should not modify the caller's parameters."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities?limit=50&page=1",
+            json={},
+            status=200,
+        )
+
+        responses.add(
+            responses.GET,
+            "https://api.example.com/cities?limit=50&page=2",
+            json={},
+            status=200,
+        )
+
+        parameters = {
+            "limit": 50,
+        }
+
+        self.api.get(
+            "cities",
+            parameters=parameters,
+            total_pages=2,
+        )
+
+        self.assertEqual(
+            parameters,
+            {
+                "limit": 50,
+            },
+        )
+
+    @responses.activate
     def test_get_fail(self):
-        self.json_api.get("get fail!")
+        """GET should raise HTTPError for unsuccessful responses."""
+        responses.add(
+            responses.GET,
+            "https://api.example.com/missing",
+            status=404,
+        )
 
-    def test_get_url_too_long(self):
-        countries = list()
-        for letter_one in string.ascii_uppercase:
-            for letter_two in string.ascii_uppercase:
-                for letter_three in string.ascii_uppercase:
-                    countries.append(letter_one + letter_two)
-                    countries.append(letter_one + letter_two + letter_three)
+        with self.assertRaises(
+            requests.exceptions.HTTPError
+        ):
+            self.api.get("missing")
 
-        # Make sure that we get a 414 error with this endpoint.
-        parameters = {"country": countries[:10000]}
-        get_endpoint = "https://api.openaq.org/v1/cities"
-        get_endpoint += ua_generic_rest_api._query_builder(parameters)
-        try:
-            requests.get(get_endpoint)
-        except requests.exceptions.HTTPError as error:
-            assert error.status == 414
+    @responses.activate
+    def test_put(self):
+        """PUT should send a payload to the correct endpoint."""
+        responses.add(
+            responses.PUT,
+            "https://api.example.com/users/1",
+            json={"updated": True},
+            status=200,
+        )
 
-        responses = self.json_api.get(
-            "https://api.openaq.org/v1/cities", parameters=parameters)
+        payload = '{"name": "Tester"}'
 
-        for response in responses:
-            # Some of these gets are not well-formed, but it doesn't return a
-            # 414 error.
-            assert response.status_code in [200, 400]
+        result = self.api.put(
+            "users/1",
+            payload,
+        )
 
-    def test_put_endpoint_with_and_without_host(self):
-        # NOTE: To test the put function, write a test for your api that
-        # extends GenericRestApi; this test api doesn't have any
-        # unauthenticated put endpoints.
-        pass
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(len(responses.calls), 1)
+        self.assertEqual(
+            responses.calls[0].request.body,
+            payload,
+        )
 
-    def test_delete(self):
-        # NOTE: To test the delete function, write a test for your api that
-        # extends GenericRestApi; this test api doesn't have any
-        # unauthenticated delete endpoints.
-        pass
-
+    @responses.activate
     def test_post(self):
-        # NOTE: To test the post function, write a test for your api that
-        # extends GenericRestApi; this test api doesn't have any
-        # unauthenticated post endpoints.
-        pass
+        """POST should send a payload to the correct endpoint."""
+        responses.add(
+            responses.POST,
+            "https://api.example.com/users",
+            json={"created": True},
+            status=201,
+        )
+
+        payload = '{"name": "Tester"}'
+
+        result = self.api.post(
+            "users",
+            payload,
+        )
+
+        self.assertEqual(result.status_code, 201)
+        self.assertEqual(len(responses.calls), 1)
+        self.assertEqual(
+            responses.calls[0].request.body,
+            payload,
+        )
+
+    @responses.activate
+    def test_delete(self):
+        """DELETE should send a request to the correct endpoint."""
+        responses.add(
+            responses.DELETE,
+            "https://api.example.com/users/1",
+            status=204,
+        )
+
+        result = self.api.delete("users/1")
+
+        self.assertEqual(result.status_code, 204)
+        self.assertEqual(len(responses.calls), 1)
+
+    def test_query_builder_encodes_special_characters(self):
+        """Query builder should properly encode special characters."""
+        query = ua_generic_rest_api._query_builder(
+            {
+                "name": "Smith & Jones",
+            }
+        )
+
+        self.assertEqual(
+            query,
+            "?name=Smith+%26+Jones",
+        )
+
+    def test_http_414_scrubber_long_url(self):
+        """Long URLs should be split into multiple shorter URLs."""
+        values = [
+            f"value{i}"
+            for i in range(1000)
+        ]
+
+        query = ua_generic_rest_api._query_builder(
+            {
+                "country": values,
+            }
+        )
+
+        endpoint = (
+            f"https://api.example.com/cities{query}"
+        )
+
+        self.assertGreater(
+            len(endpoint),
+            2000,
+        )
+
+        result = (
+            ua_generic_rest_api
+            ._http_414_scrubber(
+                [endpoint]
+            )
+        )
+
+        self.assertGreater(
+            len(result),
+            1,
+        )
+
+        for url in result:
+            self.assertLessEqual(
+                len(url),
+                2000,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

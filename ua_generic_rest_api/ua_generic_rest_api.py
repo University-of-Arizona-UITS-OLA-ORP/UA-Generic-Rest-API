@@ -5,6 +5,7 @@ import concurrent.futures
 import asyncio
 import abc
 
+from urllib.parse import urlencode
 
 class GenericRestApi(abc.ABC):
     """The object that holds the stache environment variables."""
@@ -71,13 +72,21 @@ class GenericRestApi(abc.ABC):
             paged_endpoints = list()
             for i in range(1, total_pages + 1):
                 if parameters:
-                    parameters[self.page_query] = i
+                    page_parameters = parameters.copy()
+                    page_parameters[self.page_query] = i
+
                     paged_endpoints.append(
-                        endpoints[0] + _query_builder(parameters))
+                        endpoints[0] + _query_builder(page_parameters)
+                    )
                 else:
                     paged_endpoints.append(
-                        endpoints[0] + _query_builder({self.page_query: i}))
-            responses = _brute_batch_get(self.session, paged_endpoints)
+                        endpoints[0] + _query_builder({self.page_query: i})
+                    )
+
+            responses = _brute_batch_get(
+                self.session,
+                paged_endpoints
+            )
 
         else:
             response = self.session.get(endpoints[0], timeout=60)
@@ -181,26 +190,30 @@ async def _get_async(session, urls):
 
 
 def _query_builder(parameters):
-    """Converts dictionary with queries to http-able query."""
+    """Converts dictionary with queries to an HTTP-compatible query."""
     queries = dict()
+
     for key in parameters:
         queries.setdefault(key, set())
+
         if type(parameters[key]) in [list, set]:
-            # Union is Set.extend() in this context.
-            queries[key] = queries[key].union(set(parameters[key]))
+            queries[key] = queries[key].union(
+                set(parameters[key])
+            )
         else:
             queries[key].add(parameters[key])
 
-    final_query = ""
+    query_items = list()
+
     for key, group in queries.items():
         group = sorted(list(group))
-        for value in group:
-            single_query = f"&{key}={value}"
-            if single_query not in final_query:
-                final_query += single_query
 
-    final_query = final_query.lstrip('&')
-    return f"?{final_query}"
+        for value in group:
+            query_items.append(
+                (key, value)
+            )
+
+    return f"?{urlencode(query_items)}"
 
 
 def _http_414_scrubber(endpoints):
