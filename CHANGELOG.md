@@ -3,9 +3,13 @@
 All notable changes to this project can be found here.
 The format of this changelog is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 2026/07/15 [2.1.0](https://github.com/UACoreFacilitiesIT/UA-Generic-Rest-API/)
+
+Updated ascyncio calls, added max workers with a timeout at 60s, updated unit tests
+
 #### 2023/11/21 [2.0.6](https://github.com/UACoreFacilitiesIT/UA-Generic-Rest-API/)
 
-Removed requirements.txt, setup.py, and twine as packaging tools. Now, it uses poetry. 
+Removed requirements.txt, setup.py, and twine as packaging tools. Now, it uses poetry.
 
 
 #### 2020/1/20 [2.0.5](https://github.com/UACoreFacilitiesIT/UA-Generic-Rest-API/)

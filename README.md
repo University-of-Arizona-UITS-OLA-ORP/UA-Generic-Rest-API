@@ -47,12 +47,10 @@ pip install -r requirements.txt
 ## Tests
 
 - Tests are only necessary when wanting to make changes to the module.
+- Run from root of repo
 
 ```bash
-pip install --update node
-cd ./ua_generic_rest_api
-cd ./tests
-nosetests test_generic_rest_api.py
+python -m unittest ua_generic_rest_api.tests.test_generic_rest_api
 ```
 
 ## Credits

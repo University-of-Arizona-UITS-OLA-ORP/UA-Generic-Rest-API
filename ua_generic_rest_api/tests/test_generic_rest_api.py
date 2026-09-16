@@ -5,7 +5,7 @@ import responses
 
 from ua_generic_rest_api import ua_generic_rest_api
 
-
+HOST = "https://test-api.example.com/v1/"
 class TestRestApi(ua_generic_rest_api.GenericRestApi):
     """Concrete GenericRestApi implementation used for testing."""
 
@@ -16,7 +16,60 @@ class TestRestApi(ua_generic_rest_api.GenericRestApi):
             "page",
         )
 
+def make_response(
+    *,
+    status_code=200,
+    body=None,
+    url=HOST,
+    content_type="application/json",
+):
+    """Create a requests.Response suitable for mocked API calls."""
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response.headers["Content-Type"] = content_type
+    response.encoding = "utf-8"
 
+    if content_type == "application/json":
+        response._content = json.dumps(body).encode("utf-8")
+    # For xmls
+    else:
+        response._content = body.encode("utf-8")
+
+    return response
+
+
+def paginated_get_response(url, *args, **kwargs):
+    """Return deterministic paginated JSON based on the requested URL."""
+    query = parse_qs(urlparse(url).query)
+
+    page = int(query.get("page", ["1"])[0])
+    limit = int(query.get("limit", ["2"])[0])
+
+    found = 6
+    first_index = (page - 1) * limit
+    last_index = min(first_index + limit, found)
+
+    results = [
+        {
+            "id": index + 1,
+            "code": f"C{index + 1}",
+            "country": "BR" if index % 2 == 0 else "CA",
+        }
+        for index in range(first_index, last_index)
+    ]
+
+    return make_response(
+        url=url,
+        body={
+            "meta": {
+                "page": page,
+                "limit": limit,
+                "found": found,
+            },
+            "results": results,
+        },
+    )
 class TestGenericRestApi(unittest.TestCase):
     """Core unit tests for GenericRestApi."""
 

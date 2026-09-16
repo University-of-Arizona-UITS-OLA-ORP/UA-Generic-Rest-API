@@ -6,6 +6,8 @@ import asyncio
 import abc
 
 from urllib.parse import urlencode
+MAX_WORKERS = 10
+REQUEST_TIMEOUT = 60
 
 class GenericRestApi(abc.ABC):
     """The object that holds the stache environment variables."""
@@ -89,7 +91,7 @@ class GenericRestApi(abc.ABC):
             )
 
         else:
-            response = self.session.get(endpoints[0], timeout=60)
+            response = self.session.get(endpoints[0], timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             responses.append(response)
 
@@ -110,7 +112,7 @@ class GenericRestApi(abc.ABC):
         """
         if self.host not in endpoint:
             endpoint = self.host + str(endpoint)
-        response = self.session.put(endpoint, str(payload))
+        response = self.session.put(endpoint, str(payload), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
         return response
@@ -130,7 +132,7 @@ class GenericRestApi(abc.ABC):
         """
         if self.host not in endpoint:
             endpoint = self.host + str(endpoint)
-        response = self.session.post(endpoint, str(payload))
+        response = self.session.post(endpoint, str(payload), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
         return response
@@ -155,27 +157,19 @@ class GenericRestApi(abc.ABC):
 
 def _brute_batch_get(session, urls):
     """Returns a list of multithreaded get responses from the given session."""
-    # Setup event loop for async calls.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # Execute calls and get responses as a list.
-    responses = loop.run_until_complete(_get_async(session, urls))
-
-    return responses
+    return asyncio.run(_get_async(session, urls))
 
 
 async def _get_async(session, urls):
     """Uses ThreadPoolExecutor to GET the list of uris."""
     def single_get(url):
-        response = session.get(url)
+        response = session.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response
 
     # Set up executor.
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        loop = asyncio.get_event_loop()
-
+    loop = asyncio.get_running_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         # Store futures to gather.
         futures = list()
         for url in urls:
