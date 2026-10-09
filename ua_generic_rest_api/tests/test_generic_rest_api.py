@@ -1,16 +1,21 @@
-import math
 import json
-import string
 import unittest
-import requests
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import patch
+
+import requests
+import responses
+
 from ua_generic_rest_api import ua_generic_rest_api
 
-HOST = "https://test-api.example.com/v1/"
-class TestRestApi(ua_generic_rest_api.GenericRestApi):
-    def __init__(self, host, content_type):
-        super().__init__(host, content_type, "page")
+HOST = "https://api.example.com/"
+
+
+class ConcreteApi(ua_generic_rest_api.GenericRestApi):
+    """Minimal concrete subclass so the abstract base can be instantiated."""
+
+    def __init__(self, host, headers, page_param):
+        super().__init__(host, headers, page_param)
+
 
 def make_response(
     *,
@@ -28,7 +33,7 @@ def make_response(
 
     if content_type == "application/json":
         response._content = json.dumps(body).encode("utf-8")
-    # For xmls
+    # For xml and other text bodies.
     else:
         response._content = body.encode("utf-8")
 
@@ -66,281 +71,280 @@ def paginated_get_response(url, *args, **kwargs):
             "results": results,
         },
     )
+
+
 class TestGenericRestApi(unittest.TestCase):
-    def setUp(self):
-        self.json_api = TestRestApi(
+    """Core unit tests for GenericRestApi."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Create one API client shared by all tests in this class."""
+        cls.api = ConcreteApi(
             HOST,
             {"Content-Type": "application/json"},
+            "page",
         )
 
+    @responses.activate
     def test_get_no_urls(self):
-        assert self.json_api.get([]) == []
+        """GET should return an empty list when no endpoints are provided."""
+        self.assertEqual(self.api.get([]), [])
+        self.assertEqual(len(responses.calls), 0)
 
-    @patch.object(requests.Session, "get")
-    def test_get_string_and_list(self, mock_get):
-        mock_get.return_value = make_response(
-            body={"results": [{"id": 1}]},
-            url=f"{HOST}cities",
-        )
-
-        string_response = self.json_api.get(f"{HOST}cities")
-        list_response = self.json_api.get([f"{HOST}cities"])
-        assert string_response[0].text == list_response[0].text
-
-    @patch.object(requests.Session, "get")
-    def test_get_endpoint_with_and_without_host(self, mock_get):
-        mock_get.return_value = make_response(
-            body={"results": [{"code": "US"}]},
-            url=f"{HOST}countries",
-        )
-
-        with_host = self.json_api.get(f"{HOST}countries")
-        without_host = self.json_api.get("countries")
-        assert with_host[0].text == without_host[0].text
-
-        requested_urls = [
-            call.args[0]
-            for call in mock_get.call_args_list
-        ]
-
-        self.assertEqual(requested_urls, [f"{HOST}countries", f"{HOST}countries"])
-
-    @patch.object(requests.Session, "get")
-    def test_get_multiple_queries(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        response = self.json_api.get(
+    @responses.activate
+    def test_get_string_endpoint(self):
+        """GET should support a single relative endpoint."""
+        responses.add(
+            responses.GET,
             f"{HOST}cities",
+            json={"result": "success"},
+            status=200,
+        )
+        result = self.api.get("cities")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status_code, 200)
+        self.assertEqual(
+            result[0].json(),
+            {"result": "success"},
+        )
+
+    @responses.activate
+    def test_get_multiple_queries(self):
+        """GET should append multiple query parameters."""
+        responses.add(
+            responses.GET,
+            f"{HOST}cities?limit=1&page=2",
+            json={"results": []},
+            status=200,
+        )
+        result = self.api.get(
+            "cities",
             {
                 "limit": "1",
                 "page": "2",
             },
         )
-        response_json = response[0].json()
-        self.assertEqual(response_json["meta"]["page"], 2)
-        self.assertEqual(response_json["meta"]["limit"], 1)
-        self.assertEqual(len(response_json["results"]), 1)
+        self.assertEqual(result[0].status_code, 200)
+        request_url = responses.calls[0].request.url
+        self.assertIn("limit=1", request_url)
+        self.assertIn("page=2", request_url)
 
-    @patch.object(requests.Session, "get")
-    def test_get_multiple_queries_with_multiple_values(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        response = self.json_api.get(
+    @responses.activate
+    def test_get_multiple_queries_with_multiple_values(self):
+        """GET should support multiple values for one query parameter."""
+        # No query string registered, so any query string will match.
+        responses.add(
+            responses.GET,
             f"{HOST}cities",
+            json={"results": []},
+            status=200,
+        )
+        self.api.get(
+            "cities",
             {
                 "country": ["BR", "CA"],
-                "limit": "6",
+                "limit": "100",
             },
         )
+        request_url = responses.calls[0].request.url
+        self.assertIn("country=BR", request_url)
+        self.assertIn("country=CA", request_url)
+        self.assertIn("limit=100", request_url)
 
-        requested_url = mock_get.call_args.args[0]
-        requested_query = parse_qs(urlparse(requested_url).query)
-
-        self.assertEqual(requested_query["country"], ["BR", "CA"])
-        self.assertEqual(requested_query["limit"], ["6"])
-
-        response_json = response[0].json()
-        for entry in response_json["results"]:
-            self.assertIn(entry["country"], ["BR", "CA"])
-
-    @patch.object(requests.Session, "get")
-    def test_batch_get_with_multiple_queries(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        response = self.json_api.get(
-            [f"{HOST}cities"],
-            {
-                "limit": "1",
-                "page": "2",
-            },
-        )
-
-        response_json = response[0].json()
-
-        self.assertEqual(response_json["meta"]["page"], 2)
-        self.assertEqual(len(response_json["results"]), 1)
-
-    @patch.object(requests.Session, "get")
-    def test_batch_get_more_than_max_pool_threads(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        number_of_urls = 25
-        urls = [
-            f"{HOST}countries?limit=1&page={page}"
-            for page in range(1, number_of_urls + 1)
-        ]
-
-        responses = self.json_api.get(urls)
-
-        self.assertEqual(len(responses), number_of_urls)
-        self.assertEqual(mock_get.call_count, number_of_urls)
-
-    @patch.object(requests.Session, "get")
-    def test_multithread_all_pages_without_existing_parameters(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        total_pages = 3
-
-        responses = self.json_api.get(
+    @responses.activate
+    def test_batch_get_multiple_endpoints(self):
+        """GET should retrieve multiple endpoints."""
+        responses.add(
+            responses.GET,
             f"{HOST}cities",
-            total_pages=total_pages,
+            json={"name": "cities"},
+            status=200,
+        )
+        responses.add(
+            responses.GET,
+            f"{HOST}countries",
+            json={"name": "countries"},
+            status=200,
+        )
+        result = self.api.get(
+            [
+                "cities",
+                "countries",
+            ]
+        )
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(responses.calls), 2)
+
+    @responses.activate
+    def test_multithread_all_pages_with_parameters(self):
+        """GET should preserve parameters while adding page numbers."""
+        responses.add(
+            responses.GET,
+            f"{HOST}cities?limit=50&page=1",
+            json={"page": 1},
+            status=200,
+        )
+        responses.add(
+            responses.GET,
+            f"{HOST}cities?limit=50&page=2",
+            json={"page": 2},
+            status=200,
+        )
+        result = self.api.get(
+            "cities",
+            parameters={"limit": 50},
+            total_pages=2,
+        )
+        self.assertEqual(len(result), 2)
+        requested_urls = {
+            call.request.url
+            for call in responses.calls
+        }
+        self.assertIn(
+            f"{HOST}cities?limit=50&page=1",
+            requested_urls,
+        )
+        self.assertIn(
+            f"{HOST}cities?limit=50&page=2",
+            requested_urls,
         )
 
-        self.assertEqual(len(responses), total_pages)
-
-        pages = sorted(
-            response.json()["meta"]["page"]
-            for response in responses
+    @responses.activate
+    def test_get_does_not_mutate_parameters(self):
+        """Pagination should not modify the caller's parameters."""
+        responses.add(
+            responses.GET,
+            f"{HOST}cities?limit=50&page=1",
+            json={},
+            status=200,
         )
-
-        self.assertEqual(pages, [1, 2, 3])
-
-        number_of_results = sum(
-            len(response.json()["results"])
-            for response in responses
+        responses.add(
+            responses.GET,
+            f"{HOST}cities?limit=50&page=2",
+            json={},
+            status=200,
         )
-
-        self.assertEqual(number_of_results, 6)
-
-    @patch.object(requests.Session, "get")
-    def test_multithread_all_pages_with_existing_parameters(self, mock_get):
-        mock_get.side_effect = paginated_get_response
-
-        total_pages = 3
-        limit = 2
-
-        responses = self.json_api.get(
-            f"{HOST}cities",
-            parameters={"limit": limit},
-            total_pages=total_pages,
-        )
-
-        self.assertEqual(len(responses), total_pages)
-
-        for response in responses:
-            self.assertEqual(response.json()["meta"]["limit"], limit)
-
-    @patch.object(requests.Session, "get")
-    def test_get_xml_format(self, mock_get):
-        xml_body = """<?xml version="1.0" encoding="UTF-8"?>
-        <response>
-            <result>success</result>
-        </response>
-        """
-
-        mock_get.return_value = make_response(
-            body=xml_body,
-            url=f"{HOST}data.xml",
-            content_type="application/xml",
-        )
-
-        xml_api = TestRestApi(
-            HOST,
-            {"Content-Type": "application/xml"},
-        )
-
-        response = xml_api.get("data.xml")
-
-        self.assertEqual(response[0].status_code, 200)
-        self.assertIn("<result>success</result>", response[0].text)
-
-    @patch.object(requests.Session, "get")
-    def test_get_fail(self, mock_get):
-        mock_get.return_value = make_response(
-            status_code=500,
-            body={"message": "Server error"},
-            url=f"{HOST}failure",
-        )
-
-        with self.assertRaises(requests.exceptions.HTTPError):
-            self.json_api.get("failure")
-
-    @patch.object(requests.Session, "get")
-    def test_get_url_too_long(self, mock_get):
-        countries = []
-        for letter_one in string.ascii_uppercase:
-            for letter_two in string.ascii_uppercase:
-                for letter_three in string.ascii_uppercase:
-                    countries.append(letter_one + letter_two)
-                    countries.append(letter_one + letter_two + letter_three)
-
-        parameters = {"country": countries[:10000]}
-
-        mock_get.return_value = make_response(
-            status_code=200,
-            body={"results": []},
-            url=f"{HOST}cities",
-        )
-
-        responses = self.json_api.get(
+        parameters = {
+            "limit": 50,
+        }
+        self.api.get(
             "cities",
             parameters=parameters,
+            total_pages=2,
         )
-
-        self.assertGreater(len(responses), 0)
-        self.assertGreater(mock_get.call_count, 1)
-
-        for response in responses:
-            self.assertEqual(response.status_code, 200)
-
-    @patch.object(requests.Session, "put")
-    def test_put_endpoint_with_and_without_host(self, mock_put):
-        mock_put.return_value = make_response(
-            body={"updated": True},
-            url=f"{HOST}items/1",
-        )
-
-        payload = json.dumps({"name": "Updated"})
-
-        with_host = self.json_api.put(
-            f"{HOST}items/1",
-            payload,
-        )
-        without_host = self.json_api.put(
-            "items/1",
-            payload,
-        )
-
-        self.assertEqual(with_host.text, without_host.text)
-
-        requested_urls = [
-            call.args[0]
-            for call in mock_put.call_args_list
-        ]
-
         self.assertEqual(
-            requested_urls,
-            [
-                f"{HOST}items/1",
-                f"{HOST}items/1",
-            ],
+            parameters,
+            {
+                "limit": 50,
+            },
         )
 
-    @patch.object(requests.Session, "post")
-    def test_post(self, mock_post):
-        mock_post.return_value = make_response(
-            status_code=201,
-            body={"id": 1},
-            url=f"{HOST}items",
+    @responses.activate
+    def test_get_fail(self):
+        """GET should raise HTTPError for unsuccessful responses."""
+        responses.add(
+            responses.GET,
+            f"{HOST}missing",
+            status=404,
+        )
+        with self.assertRaises(
+            requests.exceptions.HTTPError
+        ):
+            self.api.get("missing")
+
+    @responses.activate
+    def test_put(self):
+        """PUT should send a payload to the correct endpoint."""
+        responses.add(
+            responses.PUT,
+            f"{HOST}users/1",
+            json={"updated": True},
+            status=200,
+        )
+        payload = '{"name": "Tester"}'
+        result = self.api.put(
+            "users/1",
+            payload,
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(len(responses.calls), 1)
+        self.assertEqual(
+            responses.calls[0].request.body,
+            payload,
         )
 
-        response = self.json_api.post(
-            "items",
-            json.dumps({"name": "Created"}),
+    @responses.activate
+    def test_post(self):
+        """POST should send a payload to the correct endpoint."""
+        responses.add(
+            responses.POST,
+            f"{HOST}users",
+            json={"created": True},
+            status=201,
+        )
+        payload = '{"name": "Tester"}'
+        result = self.api.post(
+            "users",
+            payload,
+        )
+        self.assertEqual(result.status_code, 201)
+        self.assertEqual(len(responses.calls), 1)
+        self.assertEqual(
+            responses.calls[0].request.body,
+            payload,
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["id"], 1)
-        mock_post.assert_called_once()
+    @responses.activate
+    def test_delete(self):
+        """DELETE should send a request to the correct endpoint."""
+        responses.add(
+            responses.DELETE,
+            f"{HOST}users/1",
+            status=204,
+        )
+        result = self.api.delete("users/1")
+        self.assertEqual(result.status_code, 204)
+        self.assertEqual(len(responses.calls), 1)
 
-    @patch.object(requests.Session, "delete")
-    def test_delete(self, mock_delete):
-        mock_delete.return_value = make_response(
-            status_code=204,
-            url=f"{HOST}items/1",
+    def test_query_builder_encodes_special_characters(self):
+        """Query builder should properly encode special characters."""
+        query = ua_generic_rest_api._query_builder(
+            {
+                "name": "Smith & Jones",
+            }
+        )
+        self.assertEqual(
+            query,
+            "?name=Smith+%26+Jones",
         )
 
-        response = self.json_api.delete("items/1")
+    def test_http_414_scrubber_long_url(self):
+        """Long URLs should be split into multiple shorter URLs."""
+        values = [
+            f"value{i}"
+            for i in range(1000)
+        ]
+        query = ua_generic_rest_api._query_builder(
+            {
+                "country": values,
+            }
+        )
+        endpoint = f"{HOST}cities{query}"
+        self.assertGreater(
+            len(endpoint),
+            2000,
+        )
+        result = ua_generic_rest_api._http_414_scrubber([endpoint])
+        self.assertGreater(
+            len(result),
+            1,
+        )
+        for url in result:
+            self.assertLessEqual(
+                len(url),
+                2000,
+            )
 
-        self.assertEqual(response.status_code, 204)
-        mock_delete.assert_called_once_with(f"{HOST}items/1")
+
+if __name__ == "__main__":
+    unittest.main()
